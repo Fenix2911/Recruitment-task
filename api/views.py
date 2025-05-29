@@ -1,85 +1,92 @@
-from rest_framework.response import Response
-from base.models import User, SosDevice
-
-from rest_framework.decorators import api_view
+from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from base.models import SosDevice, User
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from base.models import User, SosDevice
+from base.serializers import (
+    DeviceAssignSerializer,
+    LocationUpdateSerializer,
+    UserLocationSerializer,
+    MapLocationSerializer
+)
 
 
-@api_view(['POST'])
-def assign_device(request, id):
-    try:
-        device = SosDevice.objects.get(pk=id)
-        user_id = request.data.get('user_id')
-        user = User.objects.get(pk=user_id)
+class DeviceAssignView(APIView):
+    def post(self, request, device_id):
+        device = get_object_or_404(SosDevice, device_id=device_id)
 
-        # Unassign device from other users
-        User.objects.filter(assigned_device=device).exclude(pk=user.pk).update(assigned_device=None)
+        serializer = DeviceAssignSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
 
-        # Unassign previous device from this user (if any)
-        if user.assigned_device and user.assigned_device != device:
-            user.assigned_device.is_assigned = False
-            user.assigned_device.save()
+        user = get_object_or_404(User, id=serializer.validated_data['user_id'])
 
-        # Assign new device
-        user.assigned_device = device
-        user.save()
+        # Unassign device from previous user
+        if device.assigned_user:
+            device.assigned_user = None
+            device.save()
 
-        # Mark device as assigned
-        device.is_assigned = True
+        # Unassign any existing device from this user
+        old_device = SosDevice.objects.filter(assigned_user=user).first()
+        if old_device:
+            old_device.assigned_user = None
+            old_device.save()
+
+        # Assign device to user
+        device.assigned_user = user
         device.save()
 
-        return Response({'message': 'Device assigned successfully.'})
+        return Response({'message': 'Device assigned successfully'})
 
-    except SosDevice.DoesNotExist:
-        return Response({'error': 'Device not found.'}, status=404)
-    except User.DoesNotExist:
-        return Response({'error': 'User not found.'}, status=404)
 
-@api_view(['POST'])
-def post_location(request, id):
-    try:
-        device = SosDevice.objects.get(pk=id)
+class DeviceLocationView(APIView):
+    def post(self, request, device_id):
+        device = get_object_or_404(SosDevice, device_id=device_id)
 
-        if not device.is_assigned:
-            return Response({'error': 'Device is not assigned.'}, status=400)
+        if not device.assigned_user:
+            return Response({'error': 'Device not assigned'}, status=400)
 
-        device.latitude = request.data.get('latitude')
-        device.longitude = request.data.get('longitude')
-        device.ping_time = request.data.get('ping_time')
+        serializer = LocationUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        device.latitude = serializer.validated_data['latitude']
+        device.longitude = serializer.validated_data['longitude']
+        device.ping_time = serializer.validated_data.get('ping_time') or timezone.now()
         device.save()
 
-        return Response({'message': 'Location updated.'})
-    except SosDevice.DoesNotExist:
-        return Response({'error': 'Device not found.'}, status=404)
+        return Response({'message': 'Location updated'})
 
-@api_view(['GET'])
-def user_location(request, id):
-    try:
-        user = User.objects.get(pk=id)
-        device = user.assigned_device
 
-        if not device:
-            return Response({'error': 'No device assigned to user.'}, status=404)
+class UserLocationView(APIView):
+    def get(self, request, user_id):
+        user = get_object_or_404(User, id=user_id)
 
-        return Response({
-            'latitude': device.latitude,
-            'longitude': device.longitude,
-            'timestamp': device.ping_time
-        })
+        try:
+            device = user.sosdevice
+            if not device.latitude or not device.longitude:
+                return Response({'error': 'No location data'}, status=404)
 
-    except User.DoesNotExist:
-        return Response({'error': 'User not found.'}, status=404)
+            data = {
+                'latitude': device.latitude,
+                'longitude': device.longitude,
+                'timestamp': device.ping_time
+            }
+            serializer = UserLocationSerializer(data)
+            return Response(serializer.data)
 
-@api_view(['GET'])
-def device_map(request):
-    devices = SosDevice.objects.filter(is_assigned=True)
-    data = [{
-        'device_id': d.device_id,
-        'latitude': d.latitude,
-        'longitude': d.longitude,
-        'timestamp': d.ping_time
-    } for d in devices]
+        except SosDevice.DoesNotExist:
+            return Response({'error': 'No device assigned'}, status=404)
 
-    return Response(data)
+
+class MapView(APIView):
+    def get(self, request):
+        devices = SosDevice.objects.filter(
+            assigned_user__isnull=False,
+            latitude__isnull=False,
+            longitude__isnull=False
+        ).select_related('assigned_user')
+
+        serializer = MapLocationSerializer(devices, many=True)
+        return Response(serializer.data)

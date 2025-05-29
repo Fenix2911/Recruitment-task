@@ -1,9 +1,9 @@
 from django.urls import path
-from .views import assign_device, post_location, user_location, device_map
+from . import views
 
 urlpatterns = [
-    path('devices/<int:id>/assign/', assign_device),
-    path('devices/<int:id>/location/', post_location),
-    path('users/<int:id>/location/', user_location),
-    path('map/', device_map),
+    path('devices/<str:device_id>/assign/', views.DeviceAssignView.as_view()),
+    path('devices/<str:device_id>/location/', views.DeviceLocationView.as_view()),
+    path('users/<int:user_id>/location/', views.UserLocationView.as_view()),
+    path('map/', views.MapView.as_view()),
 ]
